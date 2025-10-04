@@ -18,7 +18,7 @@ import numpy as np
 import tensorflow as tf
 
 from keras import layers, models, optimizers, losses
-import keras.utils as np_utils
+# import keras.utils as np_utils
 from keras.utils import to_categorical
 from keras.datasets import mnist
 
@@ -55,7 +55,7 @@ y_train = tf.one_hot(y_train, depth=num_classes)
 print('set config.')
 
 img_shape = (28, 28, 1)
-noise_dim = 100
+noise_dim = 20
 
 batch_size = 512
 D_epochs = 5
@@ -75,7 +75,7 @@ def build_generator(noise_dim=100, num_classes=10):
     # build noise, embedding of the classes, and concatenate into the first layer
     noise_input = layers.Input(shape=(noise_dim,), name='noise')
     class_input = layers.Input(shape=(num_classes,), dtype='int32', name='label')
-    class_emb = layers.Embedding(num_classes, 50)(class_input)
+    class_emb = layers.Embedding(num_classes, 5)(class_input)
     class_emb = layers.Flatten()(class_emb)
     x = layers.Concatenate()([noise_input, class_emb])
     
