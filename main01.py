@@ -8,9 +8,10 @@ Created on Wed Sep 24 16:16:31 2025
 # start the spyder kernel in wsl:
 # conda activate aigpu
 # python -m spyder_kernels.console
+# python -m spyder_kernels.console --f=/home/joshua/.local/share/jupyter/runtime/my_kernel.json
 
 # access it using the Consoles > existing kernel:
-# //wsl$/Ubuntu/home/joshua/.local/share/jupyter/runtime/kernel-****.json
+# //wsl$/Ubuntu/home/joshua/.local/share/jupyter/runtime/my_kernel.json
 
 # %% imports
 
@@ -58,9 +59,8 @@ img_shape = (28, 28, 1)
 noise_dim = 20
 
 batch_size = 512
-D_epochs = 5
-G_epochs = 10
-DG_epochs = 35
+C_epochs = 3
+DG_epochs = 3
 steps_per_epoch = x_train.shape[0] // batch_size
 
 learning_rate = 2e-4
@@ -70,7 +70,49 @@ beta_2 = 0.999
 # %% models
 print('setup models.')
 
-# Takes noise_dim which is an added noise of n dimensions, num_classes is the number of classes which will be shaped into a size 50 embedding before concatenating with the noise
+def build_classifier(img_shape=(28, 28, 1), num_classes=10):
+    img_input = layers.Input(shape=img_shape)
+    
+    x = layers.Conv2D(64, 3, strides=2, padding='same')(img_input)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Conv2D(128, 3, strides=2, padding='same')(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Conv2D(256, 3, strides=2, padding='same')(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Flatten()(x)
+    
+    # branch for class
+    output_class = layers.Dense(num_classes, activation='softmax', name='class')(x)
+    
+    return models.Model(img_input, output_class, name='classifier')
+
+def build_descriminator(img_shape=(28, 28, 1)):
+    img_input = layers.Input(shape=img_shape)
+    
+    x = layers.Conv2D(64, 3, strides=2, padding='same')(img_input)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Conv2D(128, 3, strides=2, padding='same')(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Conv2D(256, 3, strides=2, padding='same')(x)
+    x = layers.LeakyReLU(0.2)(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Flatten()(x)
+    
+    output_rf = layers.Dense(1, activation='sigmoid', name='real_fake')(x)
+    
+    return models.Model(img_input, output_rf, name='descriminator')
+
 def build_generator(noise_dim=100, num_classes=10):
     # build noise, embedding of the classes, and concatenate into the first layer
     noise_input = layers.Input(shape=(noise_dim,), name='noise')
@@ -99,64 +141,51 @@ def build_generator(noise_dim=100, num_classes=10):
     
     return models.Model([noise_input, class_input], img_output, name='generator')
 
-def build_descriminator(img_shape=(28, 28, 1), num_classes=10):
-    img_input = layers.Input(shape=img_shape)
+def build_generator_trainer(noise_dim=100, num_classes=10):
+    noise_input = layers.Input(shape=(noise_dim,))
+    class_input = layers.Input(shape=(num_classes,), dtype='int32')
     
-    x = layers.Conv2D(64, 3, strides=2, padding='same')(img_input)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.3)(x)
+    fake_img = G([noise_input, class_input])
     
-    x = layers.Conv2D(128, 3, strides=2, padding='same')(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.3)(x)
+    class_pred = C(fake_img)
+    rf_pred = D(fake_img)
     
-    x = layers.Conv2D(256, 3, strides=2, padding='same')(x)
-    x = layers.LeakyReLU(0.2)(x)
-    x = layers.Dropout(0.3)(x)
-    
-    x = layers.Flatten()(x)
-    
-    # branch for real/false doesn't affect convolution layers
-    # x_rf = layers.Lambda(lambda t: tf.stop_gradient(t), name="detach_for_rf")(x)
-    # output_rf = layers.Dense(1, activation='sigmoid', name='real_fake')(x_rf)
-    output_rf = layers.Dense(1, activation='sigmoid', name='real_fake')(x)
-    
-    # branch for class
-    output_class = layers.Dense(num_classes, activation='softmax', name='class')(x)
-    
-    return models.Model(img_input, [output_rf, output_class], name='descriminator')
+    return models.Model([noise_input, class_input], [rf_pred, class_pred], name='G_CD_stacked')
 
 G = build_generator(noise_dim, num_classes)
-D = build_descriminator(img_shape, num_classes)
+C = build_classifier(img_shape, num_classes)
+D = build_descriminator(img_shape)
+G_CD = build_generator_trainer(noise_dim, num_classes)
 
 
 # %% optimise and compile
 print('setup optimisers and compile.')
 
-gen_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
-des_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
+# compile classifier
+cls_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
+C.compile(
+    optimizer = cls_opt,
+    loss = {
+        'class': losses.CategoricalCrossentropy()
+        },
+    loss_weights = {'class': 1.0},
+    metrics = {'class': 'accuracy'}
+    )
 
 # compile descriminator
+des_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 D.compile(
     optimizer = des_opt,
     loss = {
-        'real_fake': losses.BinaryCrossentropy(from_logits=False),
-        'class': losses.CategoricalCrossentropy()
+        'real_fake': losses.BinaryCrossentropy(from_logits=False)
         },
-    loss_weights = {'real_fake': 0.1, 'class': 1.0},
-    metrics = {'real_fake': 'accuracy', 'class': 'accuracy'}
+    loss_weights = {'real_fake': 1.0},
+    metrics = {'real_fake': 'accuracy'}
     )
 
-# combine models (for generator learning)
-noise_input = layers.Input(shape=(noise_dim,))
-class_input = layers.Input(shape=(num_classes,), dtype='int32')
-fake_img = G([noise_input, class_input])
-D.trainable = False
-rf_pred, class_pred = D(fake_img)
-combined = models.Model([noise_input, class_input], [rf_pred, class_pred], name='G_D_stacked')
-
-# compile the combined model
-combined.compile(
+# compile generator training combined model
+gen_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
+G_CD.compile(
     optimizer = gen_opt,
     loss = [
         losses.BinaryCrossentropy(from_logits=False),
@@ -183,68 +212,38 @@ def gen_digit(digit:int, epoch=None):
 
 
 # %% train
-print('train.')
+print('Begin training:')
 
 fixed_noise = np.random.randn(num_classes, noise_dim).astype('float32')
 fixed_class = np.arange(num_classes, dtype='int32')
 
 # descriminator headstart training
-print('Descriminator only:')
-for epoch in range(1, D_epochs+1):
+print('Classifier:')
+C.trainable = True
+for epoch in range(1, C_epochs+1):
     for step in range(steps_per_epoch):
         # train descriminator
-        # real batch
-        idx_r = np.random.randint(0, x_train.shape[0], batch_size)
-        # idx_r = tf.random.uniform([batch_size], maxval=x_train.shape[0], dtype=tf.int32)
+        # idx_r = np.random.randint(0, x_train.shape[0], batch_size)
+        idx_r = tf.random.uniform([batch_size], maxval=x_train.shape[0], dtype=tf.int32)
         real_imgs = tf.gather(x_train, idx_r)
         real_imgs = tf.expand_dims(real_imgs, axis=-1) # expand the missing dimension
         real_labels = tf.gather(y_train, idx_r)
-        y_rf_real = tf.ones([batch_size, 1], dtype=tf.float32)
         
-        # # fake batch
-        # idx_f = tf.random.normal([batch_size, noise_dim], dtype=tf.float32)
-        # fake_labels = tf.random.uniform([batch_size], maxval=num_classes, dtype=tf.int32)
-        # fake_labels = to_categorical(fake_labels, num_classes) # convert to one-hot
-        # fake_imgs = G([idx_f, fake_labels], training=True)
-        # y_rf_fake = tf.zeros([batch_size, 1], dtype=tf.float32)
-        
-        # train seperately for stability
-        D.trainable = True
-        d_loss_real = D.train_on_batch(real_imgs, [y_rf_real, real_labels])
-        # d_loss_fake = D.train_on_batch(fake_imgs, [y_rf_fake, fake_labels])
+        c_train = C.train_on_batch(real_imgs, real_labels)
         
     # log data each epoch
-    print(f'epoch {epoch:02d}/{D_epochs} - '
-          f'D_real_acc (rf/cls): {d_loss_real[3]:.3f}/{d_loss_real[4]:.3f}')
-          # f'D_fake_acc (rf/cls): {d_loss_fake[3]:.3f}/{d_loss_fake[4]:.3f}')
-
-# generator only training
-print('Generator only:')
-for epoch in range(1, G_epochs+1):
-    for step in range(steps_per_epoch):
-        # train generator (via combined model)
-        D.trainable = False
-        idx_c = tf.random.normal([batch_size, noise_dim], dtype=tf.float32)
-        cond_labels = tf.random.uniform([batch_size], maxval=num_classes, dtype=tf.int32)
-        cond_labels = to_categorical(cond_labels, num_classes) # convert to one-hot
-        y_rf_trick  = tf.ones([batch_size, 1], dtype=tf.float32)
-        g_loss = combined.train_on_batch([idx_c, cond_labels], [y_rf_trick, cond_labels])
-        
-    # log data each epoch
-    print(f'epoch {epoch:02d}/{G_epochs} - '
-          f'G_loss: {g_loss if isinstance(g_loss, float) else g_loss[0]:.3f}')
-    
-    # generate a random digit for visual progress
-    gen_digit(np.random.randint(0, num_classes), epoch)
+    print('epoch {:02d}/{} -'.format(epoch, C_epochs), 
+          'C_loss: {:.3f}\tC_acc: {:.3f}'.format(c_train[0], c_train[1]))
 
 # descriminator and generator training
-print('Descriminator and Generator')
+print('Descriminator and Generator:')
+C.trainable = False
 for epoch in range(1, DG_epochs+1):
     for step in range(steps_per_epoch):
+        
         # train descriminator
         # real batch
-        idx_r = np.random.randint(0, x_train.shape[0], batch_size)
-        # idx_r = tf.random.uniform([batch_size], maxval=x_train.shape[0], dtype=tf.int32)
+        idx_r = tf.random.uniform([batch_size], maxval=x_train.shape[0], dtype=tf.int32)
         real_imgs = tf.gather(x_train, idx_r)
         real_imgs = tf.expand_dims(real_imgs, axis=-1) # expand the missing dimension
         real_labels = tf.gather(y_train, idx_r)
@@ -259,22 +258,31 @@ for epoch in range(1, DG_epochs+1):
         
         # train seperately for stability
         D.trainable = True
-        d_loss_real = D.train_on_batch(real_imgs, [y_rf_real, real_labels])
-        d_loss_fake = D.train_on_batch(fake_imgs, [y_rf_fake, fake_labels])
+        G.trainable = False
+        d_loss_real = D.train_on_batch(real_imgs, y_rf_real)
+        d_loss_fake = D.train_on_batch(fake_imgs, y_rf_fake)
+        
         
         # train generator (via combined model)
-        D.trainable = False
         idx_c = tf.random.normal([batch_size, noise_dim], dtype=tf.float32)
         cond_labels = tf.random.uniform([batch_size], maxval=num_classes, dtype=tf.int32)
         cond_labels = to_categorical(cond_labels, num_classes) # convert to one-hot
         y_rf_trick  = tf.ones([batch_size, 1], dtype=tf.float32)
-        g_loss = combined.train_on_batch([idx_c, cond_labels], [y_rf_trick, cond_labels])
+        
+        D.trainable = False
+        G.trainable = True
+        g_loss = G_CD.train_on_batch([idx_c, cond_labels], [y_rf_trick, cond_labels])
+        
+        pass # TODO: breakpoint for testing
+        
         
     # log data each epoch
-    print(f'epoch {epoch:02d}/{DG_epochs} - '
-          f'D_real_acc (rf/cls): {d_loss_real[3]:.3f}/{d_loss_real[4]:.3f} - '
-          f'D_fake_acc (rf/cls): {d_loss_fake[3]:.3f}/{d_loss_fake[4]:.3f} - '
-          f'G_loss: {g_loss if isinstance(g_loss, float) else g_loss[0]:.3f}')
+    print('epoch {:02d}/{} -'.format(epoch, DG_epochs), 
+          'D_r_loss: {:.3f}\tD_r_acc: {:.3f}'.format(d_loss_real[0], d_loss_real[1]), 
+          'D_f_loss: {:.3f}\tD_f_acc: {:.3f}'.format(d_loss_fake[0], d_loss_fake[1]), 
+          'G_?: {:.3f}\tG_?: {:.3f}\tG_?: {:.3f}'.format(g_loss[0], g_loss[1], g_loss[2])) # need to identify G_acc, G_C_loss, G_D_loss
+    
+    pass
     
     # generate a random digit for visual progress
     gen_digit(np.random.randint(0, num_classes), epoch)
