@@ -6,12 +6,13 @@ Created on Wed Sep 24 16:16:31 2025
 """
 
 # start the spyder kernel in wsl:
-# conda activate aigpu
+# conda activate tfgpu
 # python -m spyder_kernels.console
 # python -m spyder_kernels.console --f=/home/joshua/.local/share/jupyter/runtime/my_kernel.json
 
 # access it using the Consoles > existing kernel:
 # //wsl$/Ubuntu/home/joshua/.local/share/jupyter/runtime/my_kernel.json
+
 
 # %% imports
 
@@ -25,6 +26,9 @@ from keras.datasets import mnist
 
 import matplotlib.pyplot as plt
 
+# import wandb
+# from wandb.integration.keras import WandbCallback
+
 
 # %% setup gpu support
 
@@ -34,7 +38,7 @@ print("Num GPUs Available:", len(tf.config.list_physical_devices('GPU')))
 gpus = tf.config.experimental.list_physical_devices('GPU')
 for gpu in gpus:
     tf.config.experimental.set_memory_growth(gpu, True)
-
+    
 
 # %% Load Data
 print('load data.')
@@ -59,13 +63,29 @@ img_shape = (28, 28, 1)
 noise_dim = 20
 
 batch_size = 512
-C_epochs = 3
-DG_epochs = 3
+C_epochs = 25
+DG_epochs = 100
 steps_per_epoch = x_train.shape[0] // batch_size
 
-learning_rate = 2e-4
+learning_rate = 2e-3
 beta_1 = 0.5
 beta_2 = 0.999
+
+
+# %% setup wandb
+
+# wandb.init(
+#     project = 'MNIST-Generative-Model',
+#     name = 'run-01',
+#     config=dict(
+#         batch_size = batch_size,
+#         epochs = DG_epochs,
+#         lr = learning_rate,
+#         beta1 = beta_1,
+#         beta2 = beta_2,
+#         notes = 'Keras model, MNIST image AC-GAN, 9 metrics')
+#     )
+
 
 # %% models
 print('setup models.')
@@ -165,9 +185,7 @@ print('setup optimisers and compile.')
 cls_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 C.compile(
     optimizer = cls_opt,
-    loss = {
-        'class': losses.CategoricalCrossentropy()
-        },
+    loss = {'class': losses.CategoricalCrossentropy()},
     loss_weights = {'class': 1.0},
     metrics = {'class': 'accuracy'}
     )
@@ -176,9 +194,7 @@ C.compile(
 des_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 D.compile(
     optimizer = des_opt,
-    loss = {
-        'real_fake': losses.BinaryCrossentropy(from_logits=False)
-        },
+    loss = {'real_fake': losses.BinaryCrossentropy(from_logits=False)},
     loss_weights = {'real_fake': 1.0},
     metrics = {'real_fake': 'accuracy'}
     )
@@ -186,29 +202,68 @@ D.compile(
 # compile generator training combined model
 gen_opt = optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 G_CD.compile(
-    optimizer = gen_opt,
-    loss = [
-        losses.BinaryCrossentropy(from_logits=False),
-        losses.CategoricalCrossentropy()
-        ],
-    loss_weights = [1.0, 1.0]
+    optimizer=gen_opt,
+    loss={
+        'descriminator': losses.BinaryCrossentropy(from_logits=False),
+        'classifier': losses.CategoricalCrossentropy()
+        },
+    loss_weights={
+        'descriminator': 1.0,
+        'classifier': 1.0
+        },
+    metrics={
+        'descriminator': 'accuracy',
+        'classifier': 'accuracy'
+        }
     )
 
-
 # %% generate image
-
-def plot_digit(image, label, epoch=None, cmap='gray'):
-    plt.imshow(image, cmap=cmap)
-    plt.title(f"MNIST digit:{label}" if epoch != None else f"MNIST digit:{label} - epoch:{epoch}")
-    plt.axis('off')
-    plt.show()
-    return
 
 def gen_digit(digit:int, epoch=None):
     noise_input = np.random.normal(0, 1, (1, noise_dim))
     class_input = tf.keras.utils.to_categorical([digit], num_classes)
-    plot_digit(G.predict([noise_input, class_input], verbose=0)[0, :, :, 0], digit, epoch)
+    fig = G.predict([noise_input, class_input], verbose=0)[0, :, :, 0]
+    return fig
+
+def plot_digit(image, label, epoch=None, cmap='gray'):
+    plt.imshow(image, cmap=cmap)
+    plt.title(f"MNIST digit:{label}" if epoch == None else f"MNIST digit:{label} - epoch:{epoch}")
+    plt.axis('off')
+    plt.show()
     return
+
+def plot_20_digits(epoch_imgs, cmap='gray'):
+    rows, cols = 4, 5
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2, rows * 2))
+    
+    for ax, (img, digit, epoch) in zip(axes.ravel(), epoch_imgs):
+        ax.imshow(img, cmap=cmap)
+        ax.set_title(f"digit:{digit}" if epoch == None else f"digit:{digit} - epoch:{epoch}")
+        ax.axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    return
+
+def make_unique(xs):
+    """Round to int and increment duplicates until all are unique."""
+    out = []
+    seen = set()
+    for x in np.round(xs).astype(int):
+        while x in seen:
+            x += 1
+        seen.add(x)
+        out.append(x)
+    return np.array(out)
+
+# prepare 4x5 plots for after all images generated
+epoch_imgs = []
+n_imgs = 20 if DG_epochs > 20 else DG_epochs
+if n_imgs < 20:
+    idx_imgs = np.round(np.linspace(1, n_imgs-1, n_imgs)).astype(int)
+else:
+    xs = np.logspace(0, np.log10(DG_epochs), num=n_imgs, endpoint=True)
+    idx_imgs = make_unique(xs)
 
 
 # %% train
@@ -278,33 +333,35 @@ for epoch in range(1, DG_epochs+1):
         
     # log data each epoch
     print('epoch {:02d}/{} -'.format(epoch, DG_epochs), 
-          'D_r_loss: {:.3f}\tD_r_acc: {:.3f}'.format(d_loss_real[0], d_loss_real[1]), 
-          'D_f_loss: {:.3f}\tD_f_acc: {:.3f}'.format(d_loss_fake[0], d_loss_fake[1]), 
-          'G_?: {:.3f}\tG_?: {:.3f}\tG_?: {:.3f}'.format(g_loss[0], g_loss[1], g_loss[2])) # need to identify G_acc, G_C_loss, G_D_loss
-    
-    pass
+          'D_r/f_loss: {:.3f}/{:.3f}\tD_r/f_acc: {:.3f}/{:.3f}\t'.format(d_loss_real[0], d_loss_fake[0], d_loss_real[1], d_loss_fake[1]), 
+          'G_total/d/c_loss: {:.3f}/{:.3f}/{:.3f}\tG_d/c_acc: {:.3f}/{:.3f}'.format(g_loss[0], g_loss[1], g_loss[2], g_loss[3], g_loss[4]))
     
     # generate a random digit for visual progress
-    gen_digit(np.random.randint(0, num_classes), epoch)
+    digit = np.random.randint(0, num_classes)
+    fig = gen_digit(digit, epoch)
+    if epoch in idx_imgs: epoch_imgs.append((fig, digit, epoch))
+    plot_digit(fig, digit, epoch)
+    
+plot_20_digits(epoch_imgs)
+    
 
+# %% Plot diagram
 
-# %% plotting
+# from tensorflow.keras.utils import plot_model
 
-# # Plot accuracy
-# plt.plot(history.history['accuracy'], label='train acc')
-# plt.plot(history.history['val_accuracy'], label='val acc')
-# plt.title('CNNModel Accuracy')
-# plt.xlabel('Epoch')
-# plt.ylabel('Accuracy')
-# plt.legend()
-# plt.show()
+# # Full stacked model with submodels expanded
+# plot_model(
+#     G_CD,
+#     to_file="G_CD.png",
+#     show_shapes=True,
+#     show_layer_names=True,
+#     expand_nested=True,   # <- shows G, D, C internals
+#     rankdir="LR",         # left-to-right; use "TB" for top-to-bottom
+#     dpi=220
+# )
 
-# # Plot loss
-# plt.plot(history.history['loss'], label='train loss')
-# plt.plot(history.history['val_loss'], label='val loss')
-# plt.title('CNNModel Loss')
-# plt.xlabel('Epoch')
-# plt.ylabel('Loss')
-# plt.legend()
-# plt.show()
+# # # Optional: also export components
+# # plot_model(G,  to_file="G.png",  show_shapes=True, rankdir="LR", dpi=200)
+# # plot_model(D,  to_file="D.png",  show_shapes=True, rankdir="LR", dpi=200)
+# # plot_model(C,  to_file="C.png",  show_shapes=True, rankdir="LR", dpi=200)
 

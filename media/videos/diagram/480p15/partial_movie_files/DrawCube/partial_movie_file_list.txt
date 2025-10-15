@@ -1,0 +1,2 @@
+# This file is used internally by FFMPEG.
+file 'file:D:/Projects/AI/MNIST-Generative-Model/media/videos/diagram/480p15/partial_movie_files/DrawCube/1503299734_4141849542_1979450101.mp4'

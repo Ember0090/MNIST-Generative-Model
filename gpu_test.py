@@ -14,15 +14,19 @@ Created on Fri Sep 26 13:29:50 2025
 # https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=x86_64&Distribution=WSL-Ubuntu
 
 # CREATE THE ENVIRONMENT
-# conda create -n aigpu
-# conda activate aigpu
+# conda create -n tfgpu
+# conda activate tfgpu
 
 # INSTALL PACKAGES
 # conda install pip
-# pip install numpy torch keras matplotlib spyder-kernels ipykernel
+# pip install numpy keras matplotlib
+# pip install --upgrade "nvidia-nccl-cu12==2.27.3"
 # pip install "tf-nightly[and-cuda]"
     # needed for 50-series GPUs for the time being, otherwise, 
     # pip install tensorflow[and-cuda]
+
+# install these for spyder kernel access
+# pip install spyder-kernels ipykernel spyder
 
 
 # %% wsl gpu
