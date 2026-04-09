@@ -162,8 +162,8 @@ def build_generator(noise_dim=100, num_classes=10):
     return models.Model([noise_input, class_input], img_output, name='generator')
 
 def build_generator_trainer(noise_dim=100, num_classes=10):
-    noise_input = layers.Input(shape=(noise_dim,))
-    class_input = layers.Input(shape=(num_classes,), dtype='int32')
+    noise_input = layers.Input(shape=(noise_dim,), name='noise')
+    class_input = layers.Input(shape=(num_classes,), dtype='int32', name='label')
     
     fake_img = G([noise_input, class_input])
     
@@ -347,21 +347,21 @@ plot_20_digits(epoch_imgs)
 
 # %% Plot diagram
 
-# from tensorflow.keras.utils import plot_model
+from tensorflow.keras.utils import plot_model
 
-# # Full stacked model with submodels expanded
-# plot_model(
-#     G_CD,
-#     to_file="G_CD.png",
-#     show_shapes=True,
-#     show_layer_names=True,
-#     expand_nested=True,   # <- shows G, D, C internals
-#     rankdir="LR",         # left-to-right; use "TB" for top-to-bottom
-#     dpi=220
-# )
+# Full stacked model with submodels expanded
+plot_model(
+    G_CD,
+    to_file="G_CD.png",
+    show_shapes=True,
+    show_layer_names=True,
+    expand_nested=False,   # <- shows G, D, C internals
+    rankdir="LR",         # left-to-right; use "TB" for top-to-bottom
+    dpi=220
+)
 
-# # # Optional: also export components
-# # plot_model(G,  to_file="G.png",  show_shapes=True, rankdir="LR", dpi=200)
-# # plot_model(D,  to_file="D.png",  show_shapes=True, rankdir="LR", dpi=200)
-# # plot_model(C,  to_file="C.png",  show_shapes=True, rankdir="LR", dpi=200)
+# # Optional: also export components
+# plot_model(G,  to_file="G.png",  show_shapes=True, rankdir="LR", dpi=200)
+# plot_model(D,  to_file="D.png",  show_shapes=True, rankdir="LR", dpi=200)
+# plot_model(C,  to_file="C.png",  show_shapes=True, rankdir="LR", dpi=200)
 
